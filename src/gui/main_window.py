@@ -332,10 +332,37 @@ class MainWindow(QMainWindow):
                 )
 
     def _on_ball_calibrate(self):
-        """小球自标定：用已知直径的小球计算比例尺（无深度视差）。"""
-        frame = self._video_widget.get_current_frame_bgr()
-        if frame is None:
+        """小球自标定：扫描多帧取平均像素半径，消除单帧检测波动。
+
+        在轨迹平面内检测小球，无深度视差。
+        扫描当前帧往前 N 帧，取所有成功检测的半径中位数。
+        """
+        import cv2
+
+        if self._media_type == "image":
+            # 图片模式：只检测当前帧
+            frames_to_scan = [(self._video_widget._current_frame_idx,
+                               self._video_widget.get_current_frame_bgr())]
+        elif self._video_widget._cap is not None:
+            # 视频模式：扫描当前帧往前最多 30 帧
+            cap = self._video_widget._cap
+            current = self._video_widget._current_frame_idx
+            start = max(0, current - 30)
+            cap.set(cv2.CAP_PROP_POS_FRAMES, start)
+            frames_to_scan = []
+            for fi in range(start, current + 1):
+                ret, frame = cap.read()
+                if ret:
+                    frames_to_scan.append((fi, frame))
+            # 恢复当前帧位置
+            cap.set(cv2.CAP_PROP_POS_FRAMES, current)
+            ret, _ = cap.read()
+        else:
             QMessageBox.warning(self, "提示", "请先加载视频或图片。")
+            return
+
+        if not frames_to_scan:
+            QMessageBox.warning(self, "提示", "无法读取视频帧。")
             return
 
         cfg = self._param_panel.get_config()
@@ -348,7 +375,6 @@ class MainWindow(QMainWindow):
             cfg["detect_roi"] = None
         cfg["image_mode"] = (self._media_type == "image")
 
-        # 动态计算识别参数
         from src.tracking import (
             _compute_dynamic_detection_params,
             _compute_dynamic_tracking_params,
@@ -356,7 +382,7 @@ class MainWindow(QMainWindow):
         _compute_dynamic_detection_params(cfg)
         _compute_dynamic_tracking_params(cfg)
 
-        # 构建背景模型（如果需要）
+        # 构建背景模型
         background = None
         detect_method = cfg.get("detect_method", "auto")
         if not cfg["image_mode"] and detect_method in ("auto", "background_subtraction"):
@@ -370,26 +396,51 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
 
-        # 运行检测
+        # ★ 扫描多帧，收集所有检测到的像素半径
         detector = BallDetector(cfg, background=background)
-        detector.reset()
-        result = detector.detect(frame, self._video_widget._current_frame_idx)
+        radii = []
+        n_scanned = 0
 
-        # 小球直径（优先用 ball_radius_mm × 2，其次 ball_diameter_mm）
+        for fi, frame in frames_to_scan:
+            detector.reset()
+            result = detector.detect(frame, fi)
+            if result.get("found"):
+                r = result.get("radius_px")
+                if r and r > 0:
+                    radii.append(r)
+            n_scanned += 1
+
+        # 小球直径
         ball_diam = None
         radius_mm = cfg.get("ball_radius_mm")
         if radius_mm and radius_mm > 0:
             ball_diam = radius_mm * 2.0
         if ball_diam is None:
-            ball_diam = 1.5  # fallback
+            ball_diam = 1.5
 
-        detected_ok = bool(result.get("found"))
-        detected_r = result.get("radius_px") if detected_ok else None
-
-        self._result_tabs.append_log(
-            f"[BALL-CALIB] 检测{'成功' if detected_ok else '失败'}"
-            + (f", radius_px={detected_r:.2f}" if detected_r else "")
-        )
+        if len(radii) >= 3:
+            # 用中位数，抗异常值
+            detected_r = float(np.median(radii))
+            detected_ok = True
+            std_r = float(np.std(radii))
+            self._result_tabs.append_log(
+                f"[BALL-CALIB] 扫描 {n_scanned} 帧, 检测成功 {len(radii)} 帧\n"
+                f"  半径: median={detected_r:.2f}px, std={std_r:.2f}px, "
+                f"min={min(radii):.2f}, max={max(radii):.2f}"
+            )
+        elif len(radii) >= 1:
+            detected_r = float(np.mean(radii))
+            detected_ok = True
+            self._result_tabs.append_log(
+                f"[BALL-CALIB] 扫描 {n_scanned} 帧, 仅检出 {len(radii)} 帧, "
+                f"radius={detected_r:.2f}px"
+            )
+        else:
+            detected_r = None
+            detected_ok = False
+            self._result_tabs.append_log(
+                f"[BALL-CALIB] 扫描 {n_scanned} 帧, 无成功检测"
+            )
 
         dialog = BallCalibrateDialog(
             ball_diameter_mm=ball_diam,
@@ -405,9 +456,9 @@ class MainWindow(QMainWindow):
                 self._result_tabs.append_log(
                     f"[INFO] 小球自标定完成\n"
                     f"  小球直径: {ball_diam:.2f} mm\n"
-                    f"  像素直径: {detected_r * 2:.2f} px\n"
+                    f"  像素直径: {detected_r * 2:.2f} px (中位数, {len(radii)}帧)\n"
                     f"  比例尺: {scale:.6f} mm/px\n"
-                    f"  ★ 小球在轨迹平面，无深度视差误差"
+                    f"  ★ 多帧平均 + 轨迹平面 = 双保险"
                 )
 
     def _on_ball_position_set(self, pos):
