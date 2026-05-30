@@ -140,12 +140,12 @@ class MainWindow(QMainWindow):
     def _load_persisted_settings(self):
         """从 config/settings.json 加载持久化参数。"""
         from src.gui.parameter_panel import _SETTINGS_PATH
-        # ★ 记录 config.yaml 比例尺（settings.json 会覆盖它）
-        yaml_scale = self._param_panel.get_config().get("scale_mm_per_px")
+        # ★ 记录 config.yaml 比例尺（直接从 spinner 读，避免 get_config() 触发动参计算）
+        yaml_scale = self._param_panel._scale.value()
         loaded = self._param_panel.load_settings()
         if loaded:
-            json_scale = self._param_panel.get_config().get("scale_mm_per_px")
-            if yaml_scale and json_scale and abs(yaml_scale - json_scale) > 1e-6:
+            json_scale = self._param_panel._scale.value()
+            if yaml_scale > 0 and json_scale > 0 and abs(yaml_scale - json_scale) > 1e-6:
                 self._result_tabs.append_log(
                     f"[INFO] 比例尺已从 config.yaml 的 {yaml_scale:.6f} "
                     f"更新为 settings.json 的 {json_scale:.6f} mm/px"

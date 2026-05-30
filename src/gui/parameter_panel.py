@@ -243,8 +243,8 @@ class ParameterPanel(QScrollArea):
         self._profile_combo.currentIndexChanged.connect(self._on_profile_changed)
 
         self._radius = ParamRow("小球半径", "mm", 0.01, 100, 3, 1.0)
-        self._ball_dens = ParamRow("小球密度", "kg/m³", 100, 20000, 0, 7800)
-        self._liq_dens = ParamRow("液体密度", "kg/m³", 100, 20000, 0, 1260)
+        self._ball_dens = ParamRow("小球密度", "kg/m³", 100, 20000, 0, 7850)
+        self._liq_dens = ParamRow("液体密度", "kg/m³", 100, 20000, 0, 960)
         self._cyl_radius = ParamRow("量筒半径", "mm", 0.1, 500, 1, 25.0)
         self._liq_height = ParamRow("液柱高度", "mm", 1, 2000, 0, 400)
         self._temp = ParamRow("温度", "°C", -10, 100, 1, 40)
@@ -757,8 +757,8 @@ class ParameterPanel(QScrollArea):
             self._radius.setValue(float(mm))
         elif cfg.get("ball_radius_m") is not None:
             self._radius.setValue(cfg["ball_radius_m"] * 1000)
-        _set_d(self._ball_dens, "ball_density_kg_m3", default=7800)
-        _set_d(self._liq_dens, "liquid_density_kg_m3", default=1260)
+        _set_d(self._ball_dens, "ball_density_kg_m3", default=7850)
+        _set_d(self._liq_dens, "liquid_density_kg_m3", default=960)
         # cylinder_radius: 优先 mm，其次 m
         mm = _get(cfg, "cylinder_radius_mm")
         if mm is not None:
