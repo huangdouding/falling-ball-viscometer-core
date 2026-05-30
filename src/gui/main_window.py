@@ -24,7 +24,7 @@ from src.gui.video_widget import VideoWidget
 from src.gui.parameter_panel import ParameterPanel
 from src.gui.result_tabs import ResultTabs
 from src.gui.worker import AnalysisWorker
-from src.gui.dialogs import ScaleCalibrationDialog, LoadConfigDialog
+from src.gui.dialogs import ScaleCalibrationDialog, LoadConfigDialog, BallCalibrateDialog
 from src.utils import load_config
 from src.ball_detector import BallDetector
 from src.viscosity import compute_viscosity
@@ -114,6 +114,7 @@ class MainWindow(QMainWindow):
         self._video_widget.roi_changed.connect(self._on_roi_changed)
         self._video_widget.points_selected.connect(self._on_calibration_points)
         self._video_widget.ball_position_set.connect(self._on_ball_position_set)
+        self._video_widget.ball_calibrate_requested.connect(self._on_ball_calibrate)
         self._video_widget.video_loaded.connect(self._on_video_loaded)
 
         # 参数面板信号
@@ -139,8 +140,16 @@ class MainWindow(QMainWindow):
     def _load_persisted_settings(self):
         """从 config/settings.json 加载持久化参数。"""
         from src.gui.parameter_panel import _SETTINGS_PATH
+        # ★ 记录 config.yaml 比例尺（settings.json 会覆盖它）
+        yaml_scale = self._param_panel.get_config().get("scale_mm_per_px")
         loaded = self._param_panel.load_settings()
         if loaded:
+            json_scale = self._param_panel.get_config().get("scale_mm_per_px")
+            if yaml_scale and json_scale and abs(yaml_scale - json_scale) > 1e-6:
+                self._result_tabs.append_log(
+                    f"[INFO] 比例尺已从 config.yaml 的 {yaml_scale:.6f} "
+                    f"更新为 settings.json 的 {json_scale:.6f} mm/px"
+                )
             self._result_tabs.append_log(f"[INFO] 已加载持久化参数: {_SETTINGS_PATH}")
         else:
             self._result_tabs.append_log(f"[INFO] 首次启动，保存当前参数到 {_SETTINGS_PATH}")
@@ -312,12 +321,93 @@ class MainWindow(QMainWindow):
             scale = dialog.get_scale()
             if scale > 0:
                 self._param_panel.set_config({"scale_mm_per_px": scale})
+                # ★ 立即落盘，防止用户在 autosave 触发前切档位导致标定丢失
+                self._param_panel.save_settings()
                 self._result_tabs.append_log(
                     f"[INFO] 比例尺标定完成\n"
                     f"  第一点: ({p1[0]}, {p1[1]})\n"
                     f"  第二点: ({p2[0]}, {p2[1]})\n"
                     f"  垂直像素距离: {px_dist:.1f} px\n"
                     f"  比例尺: {scale:.6f} mm/px"
+                )
+
+    def _on_ball_calibrate(self):
+        """小球自标定：用已知直径的小球计算比例尺（无深度视差）。"""
+        frame = self._video_widget.get_current_frame_bgr()
+        if frame is None:
+            QMessageBox.warning(self, "提示", "请先加载视频或图片。")
+            return
+
+        cfg = self._param_panel.get_config()
+        roi = self._video_widget.get_roi()
+        if roi is not None:
+            cfg["roi"] = roi
+            cfg["detect_roi"] = list(roi)
+        else:
+            cfg["roi"] = None
+            cfg["detect_roi"] = None
+        cfg["image_mode"] = (self._media_type == "image")
+
+        # 动态计算识别参数
+        from src.tracking import (
+            _compute_dynamic_detection_params,
+            _compute_dynamic_tracking_params,
+        )
+        _compute_dynamic_detection_params(cfg)
+        _compute_dynamic_tracking_params(cfg)
+
+        # 构建背景模型（如果需要）
+        background = None
+        detect_method = cfg.get("detect_method", "auto")
+        if not cfg["image_mode"] and detect_method in ("auto", "background_subtraction"):
+            try:
+                from src.video_io import VideoReader
+                reader = VideoReader(self._video_path)
+                from src.tracking import _build_background
+                bg_roi = cfg.get("detect_roi") or cfg.get("roi")
+                background = _build_background(reader, n_frames=50, roi=bg_roi)
+                reader.reset()
+            except Exception:
+                pass
+
+        # 运行检测
+        detector = BallDetector(cfg, background=background)
+        detector.reset()
+        result = detector.detect(frame, self._video_widget._current_frame_idx)
+
+        # 小球直径（优先用 ball_radius_mm × 2，其次 ball_diameter_mm）
+        ball_diam = None
+        radius_mm = cfg.get("ball_radius_mm")
+        if radius_mm and radius_mm > 0:
+            ball_diam = radius_mm * 2.0
+        if ball_diam is None:
+            ball_diam = 1.5  # fallback
+
+        detected_ok = bool(result.get("found"))
+        detected_r = result.get("radius_px") if detected_ok else None
+
+        self._result_tabs.append_log(
+            f"[BALL-CALIB] 检测{'成功' if detected_ok else '失败'}"
+            + (f", radius_px={detected_r:.2f}" if detected_r else "")
+        )
+
+        dialog = BallCalibrateDialog(
+            ball_diameter_mm=ball_diam,
+            detected_radius_px=detected_r,
+            detection_ok=detected_ok,
+            parent=self,
+        )
+        if dialog.exec() == BallCalibrateDialog.Accepted:
+            scale = dialog.get_scale()
+            if scale > 0:
+                self._param_panel.set_config({"scale_mm_per_px": scale})
+                self._param_panel.save_settings()
+                self._result_tabs.append_log(
+                    f"[INFO] 小球自标定完成\n"
+                    f"  小球直径: {ball_diam:.2f} mm\n"
+                    f"  像素直径: {detected_r * 2:.2f} px\n"
+                    f"  比例尺: {scale:.6f} mm/px\n"
+                    f"  ★ 小球在轨迹平面，无深度视差误差"
                 )
 
     def _on_ball_position_set(self, pos):

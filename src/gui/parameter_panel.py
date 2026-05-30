@@ -735,13 +735,13 @@ class ParameterPanel(QScrollArea):
                     return v
             return default
 
-        def _set_d(spin, *keys, **_):
-            v = _get(cfg, *keys, default=None)
+        def _set_d(spin, *keys, default=None, **_):
+            v = _get(cfg, *keys, default=default)
             if v is not None:
                 spin.setValue(float(v))
 
-        def _set_i(spin, *keys, **_):
-            v = _get(cfg, *keys, default=None)
+        def _set_i(spin, *keys, default=None, **_):
+            v = _get(cfg, *keys, default=default)
             if v is not None:
                 spin.setValue(int(v))
 

@@ -1158,7 +1158,7 @@ def process_video(video_path: str, config: dict, *, frame_callback=None) -> dict
     # 这样远处误识别点不会把插值轨迹拉偏。
     df = _remove_trajectory_outliers(df, config)
     df = _trim_after_breakaway(df, config)
-    df = _interpolate_short_gaps(df, max_gap_frames=3)
+    df = _interpolate_short_gaps(df, max_gap_frames=3, scale_m_per_px=scale_m_per_px)
     df = _remove_trajectory_outliers(df, config)
     df = _trim_after_breakaway(df, config)
 
@@ -1693,10 +1693,12 @@ def _restore_detector_to_last_good(detector: BallDetector, x: float, y: float,
     detector.set_search_center(lx, ly)
 
 
-def _interpolate_short_gaps(df: pd.DataFrame, max_gap_frames: int = 3) -> pd.DataFrame:
+def _interpolate_short_gaps(df: pd.DataFrame, max_gap_frames: int = 3,
+                           scale_m_per_px: float | None = None) -> pd.DataFrame:
     """对 ≤ max_gap_frames 帧的短间隙做线性插值补全。
 
     插值后的帧 point_type="interpolated"。
+    scale_m_per_px: 全局比例尺 (m/px)，传了则直接使用，不反推。
     """
     valid = df["valid"].values
     n = len(df)
@@ -1737,25 +1739,25 @@ def _interpolate_short_gaps(df: pd.DataFrame, max_gap_frames: int = 3) -> pd.Dat
             y_interp = y_a + (y_b - y_a) * t
             idx = a_idx + g
 
-            scale_m_per_px = None
-            if df.loc[idx, "x_m"] is not None or pd.isna(df.loc[idx, "x_m"]):
-                # 计算实际距离
+            # ★ 优先使用全局比例尺，不回退反推（反推易受单帧误差污染）
+            sc = scale_m_per_px
+            if sc is None or sc <= 0:
+                # 回退：从已有数据反推比例尺（兼容无全局 scale_m_per_px 的旧调用）
                 try:
-                    # 复用前一个有值的比例尺
                     for search_back in range(idx - 1, -1, -1):
                         sx = df.loc[search_back, "x_m"]
                         spx = df.loc[search_back, "x_px"]
                         if pd.notna(sx) and pd.notna(spx) and spx != 0:
-                            scale_m_per_px = sx / spx
+                            sc = sx / spx
                             break
                 except (ZeroDivisionError, TypeError):
                     pass
 
             df.loc[idx, "x_px"] = x_interp
             df.loc[idx, "y_px"] = y_interp
-            if scale_m_per_px and scale_m_per_px > 0:
-                df.loc[idx, "x_m"] = x_interp * scale_m_per_px
-                df.loc[idx, "y_m"] = y_interp * scale_m_per_px
+            if sc and sc > 0:
+                df.loc[idx, "x_m"] = x_interp * sc
+                df.loc[idx, "y_m"] = y_interp * sc
             df.loc[idx, "valid"] = True
             df.loc[idx, "point_type"] = "interpolated"
 

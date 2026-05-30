@@ -21,11 +21,11 @@ from src.pipeline import run_pipeline
 BASE_VIDEO = "C:/Users/25570/Desktop/物理竞赛1/实验/第一周"
 OUTPUT_ROOT = os.path.join(BASE_VIDEO, "新管线结果")
 
-# ── 物理参数 ──
+# ── 以下参数仅在 config.yaml 缺少对应值时作为回退 ──
 BALL_DENSITY = 7850.0      # kg/m3
 LIQUID_DENSITY = 950.0     # kg/m3
 LIQUID_HEIGHT_MM = 335.0   # 33.5 cm
-SCALE_MM_PER_PX = 0.286902
+_SCALE_FALLBACK = 0.286902  # 仅在 config.yaml 无 scale_mm_per_px 时使用
 
 # 球径 → 半径映射
 DIAM_TO_RADIUS = {1.5: 0.75, 2.0: 1.0, 2.5: 1.25}
@@ -45,7 +45,9 @@ def run_single(video_path: str, ball_size: float, temp: int, output_dir: str) ->
     config["liquid_density_kg_m3"] = LIQUID_DENSITY
     config["liquid_height_mm"] = LIQUID_HEIGHT_MM
     config["cylinder_radius_mm"] = 20.0  # unchanged
-    config["scale_mm_per_px"] = SCALE_MM_PER_PX
+    # ★ 优先使用 config.yaml 的比例尺，仅回退到脚本常量
+    if config.get("scale_mm_per_px") is None:
+        config["scale_mm_per_px"] = _SCALE_FALLBACK
     config["temperature_c"] = float(temp)
     config["reference_viscosity_pa_s"] = REF_VISC[temp]
     config["output_dir"] = output_dir

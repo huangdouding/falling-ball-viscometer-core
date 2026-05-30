@@ -438,6 +438,15 @@ def _build_traj_df(
     time_s = frames / fps
     y_m = y_global * scale_m_per_px
 
+    # —— 归一化 y_m 为相对于首个 raw 检测帧的物理位移 ——
+    y0_px = None
+    for i, pt in enumerate(point_types):
+        if pt == "raw":
+            y0_px = y_global[i]
+            break
+    if y0_px is not None:
+        y_m = (y_global - y0_px) * scale_m_per_px
+
     valid = np.array([r["point_type"] in ("raw", "predicted", "interpolated")
                       for r in records])
 
