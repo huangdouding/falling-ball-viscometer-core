@@ -57,6 +57,12 @@
   "fall_axis_x": null,
   "allowed_axis_deviation_px": 50,
   "enable_long_line_rejection": true,
+  "roi": [
+    345,
+    420,
+    80,
+    419
+  ],
   "_expected_radius_px": 5.399078269357855,
   "_expected_area_px": 91.57757086382517,
   "_param_source": "auto（从 ball_radius_mm / scale_mm_per_px 计算）",

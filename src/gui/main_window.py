@@ -411,16 +411,19 @@ class MainWindow(QMainWindow):
         if ball_diam is None:
             ball_diam = 1.5
 
-        # ★ 逐帧检测 + 质量过滤
+        # ★ 逐帧检测 + 质量过滤（宽松策略：主要靠后续离群值剔除保证质量）
         detector = BallDetector(cfg, background=background)
         raw_detections = []  # [(frame_idx, cx, cy, radius_px, circularity, diff_score), ...]
         ball_left_roi = False
+        reject_stats = {"not_found": 0, "outside_roi": 0, "bad_radius": 0,
+                        "low_circ": 0, "low_diff": 0}
 
         for fi, frame in frames_to_scan:
             detector.reset()
             result = detector.detect(frame, fi)
 
             if not result.get("found"):
+                reject_stats["not_found"] += 1
                 continue
 
             cx = result.get("x_px")
@@ -428,24 +431,28 @@ class MainWindow(QMainWindow):
             r = result.get("radius_px")
             circ = result.get("circularity", 0)
             candidates = result.get("candidates", [])
+            best_diff = candidates[0].get("diff_score", 0) if candidates else 0
 
-            # ── 质量验证：确保是小球不是噪点 ──
+            # ── 质量验证（宽松阈值，不过滤真小球）──
 
             # 1. 位置必须在 ROI 内
             if not (roi_x <= cx <= roi_x + roi_w and roi_y <= cy <= roi_y + roi_h):
+                reject_stats["outside_roi"] += 1
                 continue
 
-            # 2. 半径必须合理（>0.5px 且 < ROI宽度的1/3）
-            if r is None or r < 0.5 or r > roi_w / 3:
+            # 2. 半径必须 > 0（不过分限制上限，后续离群值剔除会处理）
+            if r is None or r <= 0:
+                reject_stats["bad_radius"] += 1
                 continue
 
-            # 3. 圆形度不能太差
-            if circ < 0.40:
+            # 3. 圆形度极低才拒绝（小球只有几像素，圆形度天然偏低）
+            if circ < 0.25:
+                reject_stats["low_circ"] += 1
                 continue
 
-            # 4. 最优候选的 diff_score 不能太低（静态噪点diff≈0）
-            best_diff = candidates[0].get("diff_score", 0) if candidates else 0
-            if best_diff < 1.0:
+            # 4. diff_score 为负才拒绝（负值=静止背景，正值=可能运动）
+            if best_diff < 0:
+                reject_stats["low_diff"] += 1
                 continue
 
             raw_detections.append((fi, cx, cy, r, circ, best_diff))
@@ -459,10 +466,15 @@ class MainWindow(QMainWindow):
         n_found = len(raw_detections)
 
         if n_found < 3:
+            rs = reject_stats
             self._result_tabs.append_log(
                 f"[BALL-CALIB] ROI内扫描 {n_scanned} 帧, "
-                f"通过质量过滤仅 {n_found} 帧（需≥3帧）\n"
-                f"  请确保小球在 ROI 内清晰可见"
+                f"通过仅 {n_found} 帧（需≥3帧）\n"
+                f"  拒绝明细: 未检出={rs['not_found']}, "
+                f"出ROI={rs['outside_roi']}, "
+                f"半径异常={rs['bad_radius']}, "
+                f"圆度低={rs['low_circ']}, "
+                f"diff负={rs['low_diff']}"
             )
             dialog = BallCalibrateDialog(
                 ball_diameter_mm=ball_diam,
