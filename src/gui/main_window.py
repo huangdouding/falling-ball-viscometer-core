@@ -463,29 +463,37 @@ class MainWindow(QMainWindow):
 
         radii = np.array([d[3] for d in raw_detections])
 
-        # ★ 迭代剔除离群值 → 取最稳定的平均值
-        # 第1轮：剔除偏离中位数超过 20% 的点
-        median_r = float(np.median(radii))
-        keep = np.abs(radii - median_r) / median_r < 0.20
-        radii_stable = radii[keep]
-        n_outliers = int((~keep).sum())
+        # ★ 密度峰值法：小球会被稳定检测到某个值附近，噪点偶尔出现。
+        #    找直方图中计数最多的 bin，取该 bin 周围窗口内的均值。
+        #    这比中位数/均值更抗噪——异常值再多也影响不了峰值位置。
+        bin_width = 0.15  # px
+        r_min, r_max = radii.min(), radii.max()
+        n_bins = max(5, int((r_max - r_min) / bin_width) + 1)
+        hist, bin_edges = np.histogram(radii, bins=n_bins)
 
-        # 第2轮（如果还有足够样本）：再收紧到 15%
-        if len(radii_stable) >= 8:
-            median2 = float(np.median(radii_stable))
-            keep2 = np.abs(radii_stable - median2) / median2 < 0.15
-            n_outliers += int((~keep2).sum())
-            radii_stable = radii_stable[keep2]
+        # 找密度最高的 bin
+        peak_bin = int(np.argmax(hist))
+        peak_center = (bin_edges[peak_bin] + bin_edges[peak_bin + 1]) / 2.0
+
+        # 取峰值窗口 ±2 bin 内的所有样本
+        win_start = max(0, peak_bin - 2)
+        win_end = min(n_bins, peak_bin + 3)
+        win_lo = bin_edges[win_start]
+        win_hi = bin_edges[win_end]
+        in_window = (radii >= win_lo) & (radii <= win_hi)
+        radii_stable = radii[in_window]
 
         detected_r = float(np.mean(radii_stable))
         detected_ok = True
         std_r = float(np.std(radii_stable))
+        n_dropped = n_found - len(radii_stable)
 
         self._result_tabs.append_log(
-            f"[BALL-CALIB] ROI 内扫描 {n_scanned} 帧 → 通过过滤 {n_found} 帧\n"
-            f"  剔除离群 {n_outliers} 帧 → 稳定样本 {len(radii_stable)} 帧\n"
-            f"  半径: mean={detected_r:.2f}px, std={std_r:.2f}px\n"
-            f"  范围: [{radii_stable.min():.2f}, {radii_stable.max():.2f}] px"
+            f"[BALL-CALIB] ROI 内扫描 {n_scanned} 帧 → 检出 {n_found} 帧\n"
+            f"  半径直方图峰值 @ {peak_center:.2f}px (计数={hist[peak_bin]})\n"
+            f"  峰值窗口 [{win_lo:.2f}, {win_hi:.2f}] → {len(radii_stable)} 帧 "
+            f"(丢弃 {n_dropped})\n"
+            f"  密度均值: {detected_r:.2f}px, std={std_r:.2f}px"
             + (f"\n  小球{'已' if ball_left_roi else '未'}离开 ROI 底部")
         )
 
