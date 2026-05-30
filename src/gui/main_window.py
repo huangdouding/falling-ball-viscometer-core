@@ -94,10 +94,8 @@ class MainWindow(QMainWindow):
         # 连接信号
         self._connect_signals()
 
-        # 默认加载 config.yaml
-        self._load_default_config()
-        # 加载持久化 settings.json（覆盖 yaml 中的 UI 参数）
-        self._load_persisted_settings()
+        # ★ 启动加载：config.yaml + settings.json 合并，一次 set_config
+        self._load_startup_config()
 
     def _connect_signals(self):
         """连接各组件信号。"""
@@ -120,37 +118,51 @@ class MainWindow(QMainWindow):
         self._param_panel.config_saved.connect(self._on_config_saved)
         self._param_panel.profile_changed.connect(self._on_profile_changed)
 
-    def _load_default_config(self):
-        """尝试加载 config.yaml 默认值。"""
-        from src.utils import normalize_config_keys
-        cfg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../config.yaml")
-        cfg_path = os.path.normpath(cfg_path)
-        if os.path.exists(cfg_path):
+    def _load_startup_config(self):
+        """启动时合并加载 config.yaml + settings.json，一次回填 UI。
+
+        优先级：settings.json > config.yaml > 控件硬编码默认值
+        """
+        from src.utils import normalize_config_keys, load_config
+        from src.gui.parameter_panel import _SETTINGS_PATH
+
+        cfg = {}
+
+        # 1. config.yaml 作为基础默认值
+        cfg_yaml_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "../../config.yaml"
+        )
+        cfg_yaml_path = os.path.normpath(cfg_yaml_path)
+        has_yaml = False
+        if os.path.exists(cfg_yaml_path):
             try:
-                cfg = load_config(cfg_path)
-                cfg = normalize_config_keys(cfg)
-                self._param_panel.set_config(cfg)
-                self._result_tabs.append_log(f"[INFO] 已加载默认配置: {cfg_path}")
+                yaml_cfg = load_config(cfg_yaml_path)
+                yaml_cfg = normalize_config_keys(yaml_cfg)
+                cfg.update(yaml_cfg)
+                has_yaml = True
+                self._result_tabs.append_log(f"[INFO] 已加载默认配置: {cfg_yaml_path}")
             except Exception as e:
                 self._result_tabs.append_log(f"[WARN] 加载默认配置失败: {e}")
-        else:
-            self._result_tabs.append_log(f"[INFO] 无 config.yaml，使用默认参数")
 
-    def _load_persisted_settings(self):
-        """从 config/settings.json 加载持久化参数。"""
-        from src.gui.parameter_panel import _SETTINGS_PATH
-        # ★ 记录 config.yaml 比例尺（直接从 spinner 读，避免 get_config() 触发动参计算）
-        yaml_scale = self._param_panel._scale.value()
-        loaded = self._param_panel.load_settings()
-        if loaded:
-            json_scale = self._param_panel._scale.value()
-            if yaml_scale > 0 and json_scale > 0 and abs(yaml_scale - json_scale) > 1e-6:
-                self._result_tabs.append_log(
-                    f"[INFO] 比例尺已从 config.yaml 的 {yaml_scale:.6f} "
-                    f"更新为 settings.json 的 {json_scale:.6f} mm/px"
-                )
-            self._result_tabs.append_log(f"[INFO] 已加载持久化参数: {_SETTINGS_PATH}")
-        else:
+        # 2. settings.json 覆盖（用户持久化参数）
+        has_json = False
+        if os.path.exists(_SETTINGS_PATH):
+            try:
+                import json
+                with open(_SETTINGS_PATH, "r", encoding="utf-8") as f:
+                    json_cfg = json.load(f)
+                json_cfg = normalize_config_keys(json_cfg)
+                # ★ ★ ★ 只取 json_cfg 中实际存在的键，不污染 cfg 的键集合
+                cfg.update({k: v for k, v in json_cfg.items() if v is not None})
+                has_json = True
+                self._result_tabs.append_log(f"[INFO] 已加载持久化参数: {_SETTINGS_PATH}")
+            except Exception as e:
+                self._result_tabs.append_log(f"[WARN] 加载 settings.json 失败: {e}")
+
+        # 3. 一次回填 UI（只调用一次 set_config，避免多次 profile_changed 副作用）
+        self._param_panel.set_config(cfg)
+
+        if not has_json:
             self._result_tabs.append_log(f"[INFO] 首次启动，保存当前参数到 {_SETTINGS_PATH}")
             self._param_panel.save_settings()
 
@@ -879,7 +891,10 @@ class MainWindow(QMainWindow):
         self._result_tabs.append_log(f"[CONFIG] 参数已保存到: {os.path.normpath(path)}")
 
     def _on_profile_changed(self, key: str):
-        """分辨率档位切换时，尝试加载该档位保存的比例尺。"""
+        """分辨率档位切换时，尝试加载该档位保存的比例尺。
+
+        ★ 只设 scale spinner，不调 set_config()，避免覆盖其他物理参数。
+        """
         if key == "custom":
             return
         try:
@@ -890,7 +905,8 @@ class MainWindow(QMainWindow):
             per_res = settings.get("scale_per_resolution", {})
             saved_scale = per_res.get(key)
             if saved_scale and saved_scale > 0:
-                self._param_panel.set_config({"scale_mm_per_px": saved_scale})
+                # ★ 直接设 spinner，不触发生效流程
+                self._param_panel._scale.setValue(float(saved_scale))
                 self._result_tabs.append_log(
                     f"[CONFIG] 档位 {key} → 加载保存的比例尺: {saved_scale:.6f} mm/px"
                 )

@@ -735,13 +735,14 @@ class ParameterPanel(QScrollArea):
                     return v
             return default
 
-        def _set_d(spin, *keys, default=None, **_):
-            v = _get(cfg, *keys, default=default)
+        def _set_d(spin, *keys, **_):
+            """如果 cfg 有该键则设置 spinner，否则跳过（不覆盖默认值）。"""
+            v = _get(cfg, *keys, default=None)
             if v is not None:
                 spin.setValue(float(v))
 
-        def _set_i(spin, *keys, default=None, **_):
-            v = _get(cfg, *keys, default=default)
+        def _set_i(spin, *keys, **_):
+            v = _get(cfg, *keys, default=None)
             if v is not None:
                 spin.setValue(int(v))
 
@@ -909,6 +910,9 @@ class ParameterPanel(QScrollArea):
 
         try:
             os.makedirs(os.path.dirname(_SETTINGS_PATH), exist_ok=True)
+            # ★ 过滤临时键（以下划线开头），避免污染 settings.json
+            cfg = {k: v for k, v in cfg.items() if not k.startswith("_")}
+
             with open(_SETTINGS_PATH, "w", encoding="utf-8") as f:
                 json.dump(cfg, f, ensure_ascii=False, indent=2)
 
