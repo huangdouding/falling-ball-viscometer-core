@@ -172,6 +172,7 @@ def find_terminal_region(
             traj_df, valid_idx, t, y, x,
             window_data, window_velocities,
             config, r2_threshold, min_duration,
+            manual_override=manual_override,
         )
 
     # ================================================================
@@ -295,6 +296,7 @@ def find_terminal_region(
         traj_df, valid_idx, t, y, x,
         window_data, window_velocities,
         config, r2_threshold, min_duration,
+        manual_override=manual_override,
     )
 
 
@@ -416,6 +418,7 @@ def _fallback_search(
     config: dict,
     r2_threshold: float,
     min_duration: float,
+    manual_override: bool = False,
 ) -> dict:
     """兜底：在有效轨迹中寻找 y-t 线性度好的连续段。
 
