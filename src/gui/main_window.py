@@ -382,12 +382,14 @@ class MainWindow(QMainWindow):
         cfg["detect_roi"] = list(roi)
         cfg["image_mode"] = (self._media_type == "image")
 
-        from src.tracking import (
-            _compute_dynamic_detection_params,
-            _compute_dynamic_tracking_params,
-        )
-        _compute_dynamic_detection_params(cfg)
-        _compute_dynamic_tracking_params(cfg)
+        # ★ 标定时不依赖当前比例尺（当前比例尺可能本身就是错的）。
+        #    使用极宽的半径/面积范围，让检测器自己找最优候选。
+        cfg["auto_size_params"] = False
+        cfg["expected_radius_px_min"] = 1.0
+        cfg["expected_radius_px_max"] = 30.0
+        cfg["min_area_px"] = 2
+        cfg["max_area_px"] = 3000
+        cfg["min_circularity"] = 0.30
 
         # 构建背景模型
         background = None
