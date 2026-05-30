@@ -24,7 +24,7 @@ from src.gui.video_widget import VideoWidget
 from src.gui.parameter_panel import ParameterPanel
 from src.gui.result_tabs import ResultTabs
 from src.gui.worker import AnalysisWorker
-from src.gui.dialogs import ScaleCalibrationDialog, LoadConfigDialog, BallCalibrateDialog
+from src.gui.dialogs import ScaleCalibrationDialog, LoadConfigDialog
 from src.utils import load_config
 from src.ball_detector import BallDetector
 from src.viscosity import compute_viscosity
@@ -114,7 +114,6 @@ class MainWindow(QMainWindow):
         self._video_widget.roi_changed.connect(self._on_roi_changed)
         self._video_widget.points_selected.connect(self._on_calibration_points)
         self._video_widget.ball_position_set.connect(self._on_ball_position_set)
-        self._video_widget.ball_calibrate_requested.connect(self._on_ball_calibrate)
         self._video_widget.video_loaded.connect(self._on_video_loaded)
 
         # 参数面板信号
@@ -316,7 +315,12 @@ class MainWindow(QMainWindow):
     def _on_calibration_points(self, p1, p2):
         """比例尺标定点已选。"""
         px_dist = abs(p2[1] - p1[1])  # 仅垂直距离（刻度在竖直方向）
-        dialog = ScaleCalibrationDialog(p1, p2, px_dist, self)
+        # 传小球直径用于像素预览
+        cfg = self._param_panel.get_config()
+        ball_diam = (cfg.get("ball_radius_mm") or 0.75) * 2.0
+        dialog = ScaleCalibrationDialog(p1, p2, px_dist,
+                                        ball_diameter_mm=ball_diam,
+                                        parent=self)
         if dialog.exec() == ScaleCalibrationDialog.Accepted:
             scale = dialog.get_scale()
             if scale > 0:
@@ -328,193 +332,6 @@ class MainWindow(QMainWindow):
                     f"  第一点: ({p1[0]}, {p1[1]})\n"
                     f"  第二点: ({p2[0]}, {p2[1]})\n"
                     f"  垂直像素距离: {px_dist:.1f} px\n"
-                    f"  比例尺: {scale:.6f} mm/px"
-                )
-
-    def _on_ball_calibrate(self):
-        """小球自标定：只在 ROI 内逐帧检测，质量过滤后取稳定均值。
-
-        1. 从当前帧开始向后扫描，直到小球离开 ROI 底部
-        2. 每帧检测 + 质量验证（确保是小球不是噪点）
-        3. 迭代剔除离群值，取最稳定的平均值
-        """
-        import cv2
-
-        roi = self._video_widget.get_roi()
-        if roi is None:
-            QMessageBox.warning(self, "提示",
-                                "请先用「框选 ROI」圈出小球下落区域，\n"
-                                "再点击小球标定。")
-            return
-
-        roi_x, roi_y, roi_w, roi_h = [int(v) for v in roi]
-
-        if self._media_type == "image":
-            frames_to_scan = [(self._video_widget._current_frame_idx,
-                               self._video_widget.get_current_frame_bgr())]
-        elif self._video_widget._cap is not None:
-            cap = self._video_widget._cap
-            current = self._video_widget._current_frame_idx
-            total = self._video_widget._total_frames
-            # 从当前帧往后读，最多 200 帧（覆盖典型下落过程）
-            max_scan = min(total - current, 200)
-            cap.set(cv2.CAP_PROP_POS_FRAMES, current)
-            frames_to_scan = []
-            for _ in range(max_scan):
-                ret, frame = cap.read()
-                if not ret:
-                    break
-                fi = current + len(frames_to_scan)
-                frames_to_scan.append((fi, frame))
-            # 恢复位置
-            cap.set(cv2.CAP_PROP_POS_FRAMES, current)
-            cap.read()
-        else:
-            QMessageBox.warning(self, "提示", "请先加载视频或图片。")
-            return
-
-        if not frames_to_scan:
-            QMessageBox.warning(self, "提示", "无法读取视频帧。")
-            return
-
-        cfg = self._param_panel.get_config()
-        cfg["roi"] = roi
-        cfg["detect_roi"] = list(roi)
-        cfg["image_mode"] = (self._media_type == "image")
-
-        # ★ 标定时不依赖当前比例尺（当前比例尺可能本身就是错的）。
-        #    使用极宽的半径/面积范围，让检测器自己找最优候选。
-        cfg["auto_size_params"] = False
-        cfg["expected_radius_px_min"] = 1.0
-        cfg["expected_radius_px_max"] = 30.0
-        cfg["min_area_px"] = 2
-        cfg["max_area_px"] = 3000
-        cfg["min_circularity"] = 0.30
-
-        # 构建背景模型
-        background = None
-        detect_method = cfg.get("detect_method", "auto")
-        if not cfg["image_mode"] and detect_method in ("auto", "background_subtraction"):
-            try:
-                from src.video_io import VideoReader
-                reader = VideoReader(self._video_path)
-                from src.tracking import _build_background
-                bg_roi = cfg.get("detect_roi") or cfg.get("roi")
-                background = _build_background(reader, n_frames=50, roi=bg_roi)
-                reader.reset()
-            except Exception:
-                pass
-
-        # 小球直径
-        ball_diam = None
-        radius_mm = cfg.get("ball_radius_mm")
-        if radius_mm and radius_mm > 0:
-            ball_diam = radius_mm * 2.0
-        if ball_diam is None:
-            ball_diam = 1.5
-
-        # ★ 逐帧检测，信任单帧识别逻辑（不额外加质量过滤）
-        detector = BallDetector(cfg, background=background)
-        raw_detections = []  # [(frame_idx, cx, cy, radius_px), ...]
-        ball_left_roi = False
-        n_not_found = 0
-
-        for fi, frame in frames_to_scan:
-            detector.reset()
-            result = detector.detect(frame, fi)
-
-            if not result.get("found"):
-                n_not_found += 1
-                continue
-
-            cx = result.get("x_px")
-            cy = result.get("y_px")
-            r = result.get("radius_px")
-
-            # 仅校验：位置在 ROI 内 + 半径有效
-            if not (roi_x <= cx <= roi_x + roi_w and roi_y <= cy <= roi_y + roi_h):
-                continue
-            if r is None or r <= 0:
-                continue
-
-            raw_detections.append((fi, cx, cy, r))
-
-            # 小球离开 ROI 底部 → 停止扫描
-            if cy > roi_y + roi_h + 20:
-                ball_left_roi = True
-                break
-
-        n_scanned = len(frames_to_scan)
-        n_found = len(raw_detections)
-
-        if n_found < 3:
-            self._result_tabs.append_log(
-                f"[BALL-CALIB] ROI内扫描 {n_scanned} 帧, "
-                f"检出 {n_found} 帧（需≥3帧）\n"
-                f"  BallDetector未检出={n_not_found} 帧\n"
-                f"  请确保: ROI框住了小球, 小球在当前帧可见"
-            )
-            dialog = BallCalibrateDialog(
-                ball_diameter_mm=ball_diam,
-                detected_radius_px=None,
-                detection_ok=False,
-                parent=self,
-            )
-            dialog.exec()
-            return
-
-        radii = np.array([d[3] for d in raw_detections])
-
-        # ★ 密度峰值法：小球会被稳定检测到某个值附近，噪点偶尔出现。
-        #    找直方图中计数最多的 bin，取该 bin 周围窗口内的均值。
-        #    这比中位数/均值更抗噪——异常值再多也影响不了峰值位置。
-        bin_width = 0.15  # px
-        r_min, r_max = radii.min(), radii.max()
-        n_bins = max(5, int((r_max - r_min) / bin_width) + 1)
-        hist, bin_edges = np.histogram(radii, bins=n_bins)
-
-        # 找密度最高的 bin
-        peak_bin = int(np.argmax(hist))
-        peak_center = (bin_edges[peak_bin] + bin_edges[peak_bin + 1]) / 2.0
-
-        # 取峰值窗口 ±2 bin 内的所有样本
-        win_start = max(0, peak_bin - 2)
-        win_end = min(n_bins, peak_bin + 3)
-        win_lo = bin_edges[win_start]
-        win_hi = bin_edges[win_end]
-        in_window = (radii >= win_lo) & (radii <= win_hi)
-        radii_stable = radii[in_window]
-
-        detected_r = float(np.mean(radii_stable))
-        detected_ok = True
-        std_r = float(np.std(radii_stable))
-        n_dropped = n_found - len(radii_stable)
-
-        self._result_tabs.append_log(
-            f"[BALL-CALIB] ROI 内扫描 {n_scanned} 帧 → 检出 {n_found} 帧\n"
-            f"  半径直方图峰值 @ {peak_center:.2f}px (计数={hist[peak_bin]})\n"
-            f"  峰值窗口 [{win_lo:.2f}, {win_hi:.2f}] → {len(radii_stable)} 帧 "
-            f"(丢弃 {n_dropped})\n"
-            f"  密度均值: {detected_r:.2f}px, std={std_r:.2f}px"
-            + (f"\n  小球{'已' if ball_left_roi else '未'}离开 ROI 底部")
-        )
-
-        dialog = BallCalibrateDialog(
-            ball_diameter_mm=ball_diam,
-            detected_radius_px=detected_r,
-            detection_ok=detected_ok,
-            parent=self,
-        )
-        if dialog.exec() == BallCalibrateDialog.Accepted:
-            scale = dialog.get_scale()
-            if scale > 0:
-                self._param_panel.set_config({"scale_mm_per_px": scale})
-                self._param_panel.save_settings()
-                self._result_tabs.append_log(
-                    f"[INFO] 小球自标定完成\n"
-                    f"  小球直径: {ball_diam:.2f} mm\n"
-                    f"  像素直径: {detected_r * 2:.2f} px "
-                    f"(ROI内 {len(radii_stable)} 帧稳定均值)\n"
                     f"  比例尺: {scale:.6f} mm/px"
                 )
 

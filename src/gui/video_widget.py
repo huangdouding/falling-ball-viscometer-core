@@ -30,7 +30,6 @@ class VideoWidget(QWidget):
     roi_changed = Signal(list)
     points_selected = Signal(tuple, tuple)
     ball_position_set = Signal(tuple)   # 用户手动点击了小球位置 (vx, vy)
-    ball_calibrate_requested = Signal()  # 小球自标定请求
     video_loaded = Signal(str)     # 成功加载视频时发出，附带路径
     image_loaded = Signal(str)     # 成功加载图片时发出，附带路径
 
@@ -148,13 +147,6 @@ class VideoWidget(QWidget):
         self._btn_calib = QPushButton("标定比例尺")
         self._btn_calib.clicked.connect(self._start_calibrate)
 
-        self._btn_ball_calib = QPushButton("小球标定")
-        self._btn_ball_calib.setToolTip(
-            "用已知直径的小球自动标定比例尺\n"
-            "（小球在轨迹平面上，无深度视差误差）"
-        )
-        self._btn_ball_calib.clicked.connect(self._start_ball_calibrate)
-
         self._btn_set_ball = QPushButton("设置初始位置")
         self._btn_set_ball.setCheckable(True)
         self._btn_set_ball.clicked.connect(self._toggle_set_ball_mode)
@@ -172,7 +164,6 @@ class VideoWidget(QWidget):
         tools.addWidget(self._btn_roi)
         tools.addWidget(self._btn_clear_roi)
         tools.addWidget(self._btn_calib)
-        tools.addWidget(self._btn_ball_calib)
         tools.addWidget(self._btn_set_ball)
 
         # 调试视图选择
@@ -531,13 +522,6 @@ class VideoWidget(QWidget):
         self._calib_points = []
         self._update_cursor()
         self._status.setText("依次点击标尺的两个端点（起点 → 终点）")
-
-    def _start_ball_calibrate(self):
-        """启动小球自标定——在轨迹平面上检测小球，用已知直径算比例尺。"""
-        if self._frame_buffer is None:
-            self._status.setText("请先加载视频或图片")
-            return
-        self.ball_calibrate_requested.emit()
 
     def _toggle_set_ball_mode(self):
         if self._frame_buffer is None:
