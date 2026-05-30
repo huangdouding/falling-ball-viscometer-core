@@ -332,31 +332,43 @@ class MainWindow(QMainWindow):
                 )
 
     def _on_ball_calibrate(self):
-        """小球自标定：扫描多帧取平均像素半径，消除单帧检测波动。
+        """小球自标定：只在 ROI 内逐帧检测，质量过滤后取稳定均值。
 
-        在轨迹平面内检测小球，无深度视差。
-        扫描当前帧往前 N 帧，取所有成功检测的半径中位数。
+        1. 从当前帧开始向后扫描，直到小球离开 ROI 底部
+        2. 每帧检测 + 质量验证（确保是小球不是噪点）
+        3. 迭代剔除离群值，取最稳定的平均值
         """
         import cv2
 
+        roi = self._video_widget.get_roi()
+        if roi is None:
+            QMessageBox.warning(self, "提示",
+                                "请先用「框选 ROI」圈出小球下落区域，\n"
+                                "再点击小球标定。")
+            return
+
+        roi_x, roi_y, roi_w, roi_h = [int(v) for v in roi]
+
         if self._media_type == "image":
-            # 图片模式：只检测当前帧
             frames_to_scan = [(self._video_widget._current_frame_idx,
                                self._video_widget.get_current_frame_bgr())]
         elif self._video_widget._cap is not None:
-            # 视频模式：扫描当前帧往前最多 30 帧
             cap = self._video_widget._cap
             current = self._video_widget._current_frame_idx
-            start = max(0, current - 30)
-            cap.set(cv2.CAP_PROP_POS_FRAMES, start)
-            frames_to_scan = []
-            for fi in range(start, current + 1):
-                ret, frame = cap.read()
-                if ret:
-                    frames_to_scan.append((fi, frame))
-            # 恢复当前帧位置
+            total = self._video_widget._total_frames
+            # 从当前帧往后读，最多 200 帧（覆盖典型下落过程）
+            max_scan = min(total - current, 200)
             cap.set(cv2.CAP_PROP_POS_FRAMES, current)
-            ret, _ = cap.read()
+            frames_to_scan = []
+            for _ in range(max_scan):
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                fi = current + len(frames_to_scan)
+                frames_to_scan.append((fi, frame))
+            # 恢复位置
+            cap.set(cv2.CAP_PROP_POS_FRAMES, current)
+            cap.read()
         else:
             QMessageBox.warning(self, "提示", "请先加载视频或图片。")
             return
@@ -366,13 +378,8 @@ class MainWindow(QMainWindow):
             return
 
         cfg = self._param_panel.get_config()
-        roi = self._video_widget.get_roi()
-        if roi is not None:
-            cfg["roi"] = roi
-            cfg["detect_roi"] = list(roi)
-        else:
-            cfg["roi"] = None
-            cfg["detect_roi"] = None
+        cfg["roi"] = roi
+        cfg["detect_roi"] = list(roi)
         cfg["image_mode"] = (self._media_type == "image")
 
         from src.tracking import (
@@ -396,20 +403,6 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
 
-        # ★ 扫描多帧，收集所有检测到的像素半径
-        detector = BallDetector(cfg, background=background)
-        radii = []
-        n_scanned = 0
-
-        for fi, frame in frames_to_scan:
-            detector.reset()
-            result = detector.detect(frame, fi)
-            if result.get("found"):
-                r = result.get("radius_px")
-                if r and r > 0:
-                    radii.append(r)
-            n_scanned += 1
-
         # 小球直径
         ball_diam = None
         radius_mm = cfg.get("ball_radius_mm")
@@ -418,29 +411,95 @@ class MainWindow(QMainWindow):
         if ball_diam is None:
             ball_diam = 1.5
 
-        if len(radii) >= 3:
-            # 用中位数，抗异常值
-            detected_r = float(np.median(radii))
-            detected_ok = True
-            std_r = float(np.std(radii))
+        # ★ 逐帧检测 + 质量过滤
+        detector = BallDetector(cfg, background=background)
+        raw_detections = []  # [(frame_idx, cx, cy, radius_px, circularity, diff_score), ...]
+        ball_left_roi = False
+
+        for fi, frame in frames_to_scan:
+            detector.reset()
+            result = detector.detect(frame, fi)
+
+            if not result.get("found"):
+                continue
+
+            cx = result.get("x_px")
+            cy = result.get("y_px")
+            r = result.get("radius_px")
+            circ = result.get("circularity", 0)
+            candidates = result.get("candidates", [])
+
+            # ── 质量验证：确保是小球不是噪点 ──
+
+            # 1. 位置必须在 ROI 内
+            if not (roi_x <= cx <= roi_x + roi_w and roi_y <= cy <= roi_y + roi_h):
+                continue
+
+            # 2. 半径必须合理（>0.5px 且 < ROI宽度的1/3）
+            if r is None or r < 0.5 or r > roi_w / 3:
+                continue
+
+            # 3. 圆形度不能太差
+            if circ < 0.40:
+                continue
+
+            # 4. 最优候选的 diff_score 不能太低（静态噪点diff≈0）
+            best_diff = candidates[0].get("diff_score", 0) if candidates else 0
+            if best_diff < 1.0:
+                continue
+
+            raw_detections.append((fi, cx, cy, r, circ, best_diff))
+
+            # 5. 小球离开 ROI 底部 → 停止扫描
+            if cy > roi_y + roi_h + 20:
+                ball_left_roi = True
+                break
+
+        n_scanned = len(frames_to_scan)
+        n_found = len(raw_detections)
+
+        if n_found < 3:
             self._result_tabs.append_log(
-                f"[BALL-CALIB] 扫描 {n_scanned} 帧, 检测成功 {len(radii)} 帧\n"
-                f"  半径: median={detected_r:.2f}px, std={std_r:.2f}px, "
-                f"min={min(radii):.2f}, max={max(radii):.2f}"
+                f"[BALL-CALIB] ROI内扫描 {n_scanned} 帧, "
+                f"通过质量过滤仅 {n_found} 帧（需≥3帧）\n"
+                f"  请确保小球在 ROI 内清晰可见"
             )
-        elif len(radii) >= 1:
-            detected_r = float(np.mean(radii))
-            detected_ok = True
-            self._result_tabs.append_log(
-                f"[BALL-CALIB] 扫描 {n_scanned} 帧, 仅检出 {len(radii)} 帧, "
-                f"radius={detected_r:.2f}px"
+            dialog = BallCalibrateDialog(
+                ball_diameter_mm=ball_diam,
+                detected_radius_px=None,
+                detection_ok=False,
+                parent=self,
             )
-        else:
-            detected_r = None
-            detected_ok = False
-            self._result_tabs.append_log(
-                f"[BALL-CALIB] 扫描 {n_scanned} 帧, 无成功检测"
-            )
+            dialog.exec()
+            return
+
+        radii = np.array([d[3] for d in raw_detections])
+
+        # ★ 迭代剔除离群值 → 取最稳定的平均值
+        # 第1轮：剔除偏离中位数超过 20% 的点
+        median_r = float(np.median(radii))
+        keep = np.abs(radii - median_r) / median_r < 0.20
+        radii_stable = radii[keep]
+        n_outliers = int((~keep).sum())
+
+        # 第2轮（如果还有足够样本）：再收紧到 15%
+        if len(radii_stable) >= 8:
+            median2 = float(np.median(radii_stable))
+            keep2 = np.abs(radii_stable - median2) / median2 < 0.15
+            n_outliers += int((~keep2).sum())
+            radii_stable = radii_stable[keep2]
+
+        detected_r = float(np.mean(radii_stable))
+        detected_ok = True
+        std_r = float(np.std(radii_stable))
+
+        self._result_tabs.append_log(
+            f"[BALL-CALIB] ROI 内扫描 {n_scanned} 帧 → 通过过滤 {n_found} 帧\n"
+            f"  剔除离群 {n_outliers} 帧 → 稳定样本 {len(radii_stable)} 帧\n"
+            f"  半径: mean={detected_r:.2f}px, std={std_r:.2f}px\n"
+            f"  范围: [{radii_stable.min():.2f}, {radii_stable.max():.2f}] px"
+            + (f"\n  小球{'已' if ball_left_roi else '未'}离开 ROI 底部")
+        )
 
         dialog = BallCalibrateDialog(
             ball_diameter_mm=ball_diam,
@@ -456,9 +515,9 @@ class MainWindow(QMainWindow):
                 self._result_tabs.append_log(
                     f"[INFO] 小球自标定完成\n"
                     f"  小球直径: {ball_diam:.2f} mm\n"
-                    f"  像素直径: {detected_r * 2:.2f} px (中位数, {len(radii)}帧)\n"
-                    f"  比例尺: {scale:.6f} mm/px\n"
-                    f"  ★ 多帧平均 + 轨迹平面 = 双保险"
+                    f"  像素直径: {detected_r * 2:.2f} px "
+                    f"(ROI内 {len(radii_stable)} 帧稳定均值)\n"
+                    f"  比例尺: {scale:.6f} mm/px"
                 )
 
     def _on_ball_position_set(self, pos):

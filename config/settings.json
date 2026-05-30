@@ -1,5 +1,5 @@
 {
-  "scale_mm_per_px": 0.216217,
+  "scale_mm_per_px": 0.231521,
   "profile": "720x1280",
   "ball_radius_mm": 1.25,
   "ball_density_kg_m3": 7850.0,
@@ -18,12 +18,12 @@
   "threshold_value": null,
   "manual_threshold": null,
   "adaptive_threshold": false,
-  "min_area_px": 36,
-  "max_area_px": 336,
+  "min_area_px": 32,
+  "max_area_px": 293,
   "min_circularity": 0.35,
   "detect_method": "auto",
-  "expected_radius_px_min": 2.8906145215223598,
-  "expected_radius_px_max": 9.539027921023786,
+  "expected_radius_px_min": 2.6995391346789277,
+  "expected_radius_px_max": 8.908479144440461,
   "center_band_enabled": true,
   "center_band_left_ratio": 0.3,
   "center_band_right_ratio": 0.7,
@@ -57,14 +57,14 @@
   "fall_axis_x": null,
   "allowed_axis_deviation_px": 50,
   "enable_long_line_rejection": true,
-  "_expected_radius_px": 5.7812290430447195,
-  "_expected_area_px": 105.00022367777073,
+  "_expected_radius_px": 5.399078269357855,
+  "_expected_area_px": 91.57757086382517,
   "_param_source": "auto（从 ball_radius_mm / scale_mm_per_px 计算）",
   "dist_max": 55,
   "dx_max": 25,
   "dy_back_tol": 6,
   "scale_per_resolution": {
-    "720x1280": 0.216217,
+    "720x1280": 0.231521,
     "1080x1920": 0.2164421042316224
   }
 }
