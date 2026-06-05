@@ -1,8 +1,9 @@
 """
 黏度计算模块
 
-基于斯托克斯公式计算液体黏度，支持壁面修正（Ladenburg-Faxen）和
+基于斯托克斯公式计算液体黏度，支持壁面修正（Ladenburg 径向修正）和
 雷诺数修正（Oseen），两者可独立开关、叠加生效。
+（注：液柱高度修正暂未纳入壁面修正公式。）
 
 【符号约定】
   公式中出现的 r、R、h 均为半径/高度值（非直径）。
@@ -10,14 +11,14 @@
   基础公式（斯托克斯定律）：
       η_basic = 2 * r² * g * (ρ_s - ρ_l) / (9 * v_t)
 
-  壁面与液柱高度修正：
-      k_wall = (1 + 2.4 * r / R) * (1 + 3.3 * r / h)
+  壁面修正（Ladenburg 径向修正）：
+      k_wall = 1 + 2.4 * r / R
       η_wall = η_basic / k_wall
 
     其中：
       r — 小球半径 (m)
       R — 量筒内半径 (m)
-      h — 液柱高度 (m)
+      注：液柱高度 h 暂未纳入壁面修正公式。
 
   雷诺数修正（Oseen 修正，迭代求解隐式方程）：
       k_Re = 1 + 3/16 * Re
@@ -138,7 +139,7 @@ def compute_viscosity(
 
     eta_basic = (2.0 * r**2 * g * (rho_s - rho_l)) / (9.0 * v_t)
 
-    # ---- 壁面修正（Ladenburg-Faxen） ----
+    # ---- 壁面修正（Ladenburg） ----
     R = cylinder_radius_m
     h = liquid_height_m
 
@@ -159,7 +160,7 @@ def compute_viscosity(
 
     if enable_wall_correction:
         logger.info(
-            "Wall correction (Ladenburg-Faxen, divide correction):\n"
+            "Wall correction (Ladenburg, divide correction):\n"
             "  r = %.6f m,  R = %.6f m,  h = %.6f m\n"
             "  r/R = %.6f,  r/h = %.6f\n"
             "  wall_factor = (1+2.4*r/R) = %.6f\n"

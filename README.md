@@ -175,15 +175,15 @@ $$ \eta_{\text{basic}} = \frac{2 \cdot r^2 \cdot g \cdot (\rho_s - \rho_l)}{9 \c
 
 其中 r 为小球半径，ρ_s 为小球密度，ρ_l 为液体密度，v_t 为终端速度。
 
-### 壁面修正（Ladenburg-Faxen 公式）
+### 壁面修正（Ladenburg 公式）
 
 补偿有限容器壁面对小球阻力的影响。Stokes 定律假设无限大流体，当小球在有限半径量筒中下落时，壁面会增大阻力，使表观黏度偏高。
 
-壁面修正因子由量筒径向和轴向边界共同决定：
+壁面修正因子仅考虑量筒径向壁面效应（液柱高度修正暂未纳入）：
 
-$$ k_{\text{wall}} = \left(1 + 2.4 \frac{r}{R}\right) \left(1 + 3.3 \frac{r}{h}\right) $$
+$$ k_{\text{wall}} = 1 + 2.4 \frac{r}{R} $$
 
-其中 $r$ 为小球半径，$R$ 为量筒内半径，$h$ 为液柱高度。
+其中 $r$ 为小球半径，$R$ 为量筒内半径。
 
 由 `enable_wall_correction` 控制开关。
 
@@ -238,7 +238,7 @@ $$ \eta_{\text{final}} = \frac{\eta_{\text{basic}}}{k_{\text{wall}} \cdot k_{\te
 
 | 参数 | 说明 | 默认值 |
 |------|------|--------|
-| `g_m_s2` | 重力加速度 (m/s²) | `9.98` |
+| `g_m_s2` | 重力加速度 (m/s²) | `9.80` |
 | `temperature_c` | 液体温度 (°C) | — |
 | `reference_viscosity_pa_s` | 参考黏度值 (Pa·s)，用于对比 | — |
 | `fps` | 视频帧率 | `240` |
@@ -379,7 +379,7 @@ $$ \eta_{\text{final}} = \frac{\eta_{\text{basic}}}{k_{\text{wall}} \cdot k_{\te
 | 参数 | 说明 | 默认值 |
 |------|------|--------|
 | `use_new_pipeline` | 启用新版管线 | `false` |
-| `enable_wall_correction` | 壁面修正（Ladenburg-Faxen） | `true` |
+| `enable_wall_correction` | 壁面修正（Ladenburg） | `true` |
 | `enable_reynolds_correction` | Oseen 雷诺数修正 | `true` |
 | `enable_long_line_rejection` | 长直线结构抑制 | `true` |
 | `save_marked_video` | 输出标注视频 | `true` |
